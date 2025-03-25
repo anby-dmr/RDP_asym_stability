@@ -19,6 +19,16 @@ LqrForOut = namedtuple(
     'objs full_du_norm alpha_du_norm mean_alphas costs'
 )
 
+"""
+Date: 250324
+Try to understand the function from the perspective of python syntax.
+
+- LQRStepFn, a factory function that returns LQRStepFn.apply. 
+- This is the standard way to define a custom autograd function in PyTorch.
+- When you call LQRStep, you get a function that can be used just like any other PyTorch function (forward and backprop).
+- lqr_forward() and lqr_backward() are just helper functions that are called by LQRStepFn.apply.
+"""
+
 def LQRStep(n_state,
             n_ctrl,
             T,
@@ -59,6 +69,10 @@ def LQRStep(n_state,
         n_total_qp_iter = 0
         Vtp1 = vtp1 = None
         for t in range(T-1, -1, -1):
+            """
+            The following code is to to compute the the parameters of action value function Q_t(x_t, u_t).
+            Formula: Q(x_t, u_t) = 0.5 * [x_t, u_t].T * Qt * [x_t, u_t] + [x_t, u_t].T * q_t.
+            """
             if t == T-1:
                 Qt = C[t]
                 qt = c[t]
@@ -73,6 +87,11 @@ def LQRStep(n_state,
                     qt = c[t] + Ft_T.bmm(Vtp1).bmm(ft.unsqueeze(2)).squeeze(2) + \
                         Ft_T.bmm(vtp1.unsqueeze(2)).squeeze(2)
 
+            """
+            Split the parameters of Q_t(x_t, u_t) into the following parts to compute the control gains Kt and kt later.
+            Qt = [[Qt_xx, Qt_xu], [Qt_ux, Qt_uu]]
+            qt = [qt_x, qt_u]
+            """
             Qt_xx = Qt[:, :n_state, :n_state]
             Qt_xu = Qt[:, :n_state, n_state:]
             Qt_ux = Qt[:, n_state:, :n_state]
@@ -80,6 +99,10 @@ def LQRStep(n_state,
             qt_x = qt[:, :n_state]
             qt_u = qt[:, n_state:]
 
+            """
+            The following code is to compute the control gains Kt and kt.
+            Corresponds to the formula of feedback control law: u* = Kt*x + kt.
+            """
             if u_lower is None:
                 if n_ctrl == 1 and u_zero_I is None:
                     Kt = -(1./Qt_uu)*Qt_ux
@@ -151,6 +174,12 @@ def LQRStep(n_state,
 
             Ks.append(Kt)
             ks.append(kt)
+
+            """
+            After computing the gains Kt and kt.
+            The optimal value function can be computed (which is not computed here)
+            V(xt) = const + 0.5 * [xt].T * Vtp1 * [xt] + [xt].T * vtp2.
+            """
 
             Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
             vtp1 = qt_x + Qt_xu.bmm(kt.unsqueeze(2)).squeeze(2) + \
