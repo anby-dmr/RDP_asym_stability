@@ -1,4 +1,4 @@
-- torch mpc是网络上的mpc库，因为可能要自己做修改，所以直接拿进来了。
+- torch mpc是网络上的mpc库，https://github.com/locuslab/mpc.pytorch，因为可能要自己做修改，所以就先直接拿进来了。
 - direct_LQR_test是直接使用LQR公式的测试代码。
-- 0simple_LQR_approx_terminal是尝试使用torch mpc的代码，目前没有完成。
+- 0simple_LQR_approx_terminal是尝试使用torch mpc的代码来实现，目前没有完成，主要是torch mpc似乎不支持terminal cost。
 - 剩余的都是torch mpc库里自带的例子。
