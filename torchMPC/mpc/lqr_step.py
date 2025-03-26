@@ -59,7 +59,7 @@ def LQRStep(n_state,
             TODO
         """
     # @profile
-    def lqr_backward(ctx, C, c, F, f):
+    def lqr_backward(ctx, C, c, F, f): # F and f are the dynamics, not the final cost.
         n_batch = C.size(1)
 
         u = ctx.current_u
@@ -105,6 +105,10 @@ def LQRStep(n_state,
             """
             if u_lower is None:
                 if n_ctrl == 1 and u_zero_I is None:
+                    """
+                    This is where the problem happens when Qt_uu=0.
+                    In our simplest example, n_ctrl=1, and Qt_uu=0 at the final timestamp.
+                    """
                     Kt = -(1./Qt_uu)*Qt_ux
                     kt = -(1./Qt_uu.squeeze(2))*qt_u
                 else:
@@ -149,6 +153,11 @@ def LQRStep(n_state,
                             Kt = -Qt_ux_.lu_solve(*Qt_uu_LU_)
                             kt = -qt_u_.unsqueeze(2).lu_solve(*Qt_uu_LU_).squeeze(2)
             else:
+                """
+                When u is box-constrained, we need to solve a QP using PNQP.
+                In our study, u is not constrained.
+                However, if use env such as CartPole, u is constrained.
+                """
                 assert delta_space
                 lb = get_bound('lower', t) - u[t]
                 ub = get_bound('upper', t) - u[t]
@@ -172,13 +181,26 @@ def LQRStep(n_state,
 
             Kt_T = Kt.transpose(1,2)
 
+            """
+            Ks and ks at the final timestamp make no sense.
+            Because no control is applied at the final timestamp.
+            """
             Ks.append(Kt)
             ks.append(kt)
 
             """
+            Modification needed: terminal cost.
+            Before modifying, Ks[T-1] and ks[T-1] 's nan value will cause Vtp1 and vtp1 to be nan. Then the backward pass will all be nan.
+            After modifying this part, Ks[T-1] and ks[T-1] will still be nan. But it doesn't matter anymore.
+            And nan Ks[T-1] and ks[T-1] will not influence the forward pass, too. 
+            Because the last timestamp control will never be used.
+
             After computing the gains Kt and kt.
-            The optimal value function can be computed (which is not computed here)
-            V(xt) = const + 0.5 * [xt].T * Vtp1 * [xt] + [xt].T * vtp2.
+            delta V(xt) = const + 0.5 * [xt].T * Vtp1 * [xt] + [xt].T * vtp2.
+
+            The tail problem at the final timestamp is not considered in this implementation. Tail problem formula:
+            Vtp1 = Qf
+            vtp1 = Qf \delta_x (to be verified)
             """
 
             Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
@@ -218,14 +240,20 @@ def LQRStep(n_state,
                 xt = x[t]
                 ut = u[t]
                 dxt = dx[t]
+                """
+                xt, ut are from the old nominal trajectories.
+                new_ut is calculated by adding ut to the optimal correction in control values.
+                """
                 new_ut = util.bmv(Kt, dxt) + ut + torch.diag(alphas).mm(kt)
 
                 # Currently unimplemented:
                 assert not ((delta_u is not None) and (u_lower is None))
 
+                # Zero constraint.
                 if u_zero_I is not None:
                     new_ut[u_zero_I[t]] = 0.
 
+                # Upper/Lower bound constraint.
                 if u_lower is not None:
                     lb = get_bound('lower', t)
                     ub = get_bound('upper', t)
@@ -254,12 +282,16 @@ def LQRStep(n_state,
                             Variable(new_xt), Variable(new_ut)).data
 
                     new_x.append(new_xtp1)
+                    # dx is the change in x, compared to x_init.
                     dx.append(new_xtp1 - x[t+1])
 
                 if isinstance(true_cost, mpc.QuadCost):
                     C, c = true_cost.C, true_cost.c
                     obj = 0.5*util.bquad(new_xut, C[t]) + util.bdot(new_xut, c[t])
                 else:
+                    """
+                    Modification needed: terminal cost.
+                    """
                     obj = true_cost(new_xut)
 
                 objs.append(obj)
@@ -273,6 +305,7 @@ def LQRStep(n_state,
                 full_du_norm = (u-new_u).transpose(1,2).contiguous().view(
                     n_batch, -1).norm(2, 1)
 
+            # Only decay those batches whose objectives are not improved.
             alphas[current_cost > old_cost] *= linesearch_decay
             i += 1
 

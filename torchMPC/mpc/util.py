@@ -146,6 +146,9 @@ def get_cost(T, u, cost, dynamics=None, x_init=None, x=None):
         if isinstance(cost, QuadCost):
             obj = 0.5*bquad(xut, C[t]) + bdot(xut, c[t])
         else:
+            """
+            Modification needed: terminal cost.
+            """
             obj = cost(xut)
         objs.append(obj)
     objs = torch.stack(objs, dim=0)

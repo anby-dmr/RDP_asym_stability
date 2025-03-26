@@ -465,6 +465,9 @@ More details: https://github.com/locuslab/mpc.pytorch/issues/12
                 if self.slew_rate_penalty is not None:
                     cost = Cf(tau_t) + (slew_penalty[t-1] if t > 0 else 0)
                 else:
+                    """
+                    Modification needed: terminal cost.
+                    """
                     cost = Cf(tau_t)
 
                 grad = torch.autograd.grad(cost.sum(), tau_t,
