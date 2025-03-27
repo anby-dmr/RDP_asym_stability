@@ -147,9 +147,12 @@ def get_cost(T, u, cost, dynamics=None, x_init=None, x=None):
             obj = 0.5*bquad(xut, C[t]) + bdot(xut, c[t])
         else:
             """
-            Modification needed: terminal cost.
+            Modification done: terminal cost.
             """
-            obj = cost(xut)
+            if t == T-1:
+                obj = cost(xut, terminal=True)
+            else:
+                obj = cost(xut)
         objs.append(obj)
     objs = torch.stack(objs, dim=0)
     total_obj = torch.sum(objs, dim=0)

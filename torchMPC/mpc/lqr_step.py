@@ -59,7 +59,7 @@ def LQRStep(n_state,
             TODO
         """
     # @profile
-    def lqr_backward(ctx, C, c, F, f): # F and f are the dynamics, not the final cost.
+    def lqr_backward(ctx, C, c, F, f): # F and f are the linearized dynamics (Ak, Bk).
         n_batch = C.size(1)
 
         u = ctx.current_u
@@ -70,8 +70,17 @@ def LQRStep(n_state,
         Vtp1 = vtp1 = None
         for t in range(T-1, -1, -1):
             """
-            The following code is to to compute the the parameters of action value function Q_t(x_t, u_t).
-            Formula: Q(x_t, u_t) = 0.5 * [x_t, u_t].T * Qt * [x_t, u_t] + [x_t, u_t].T * q_t.
+            Qt = [[Qxx, Qxu], [Qux, Quu]]
+            qt = [qx, qu]
+            \delta Q(x_t, u_t) = 0.5 * [x_t, u_t].T * Qt * [x_t, u_t] + [x_t, u_t].T * qt (dont confuse Q(x_t, u_t) with Q_t)
+            However, \delta Q(x_t, u_t) is not computed here.
+            Instead, the code directly computes the control gains Kt/kt and value function parameters S_{k+1}/s_{k+1} (value function is not computed also).
+            The reason why Q and V are not computed is that we don't have state/control deviation here in the backward pass.
+
+            F = [[A, B]] (linearized dynamics)
+            C = [[l_xx, l_xu], [l_ux, l_uu]] = [[Qk, Hk], [Hk.T, Rk]] (running cost Taylor expansion)
+            Q = C + F.T * V * F = C + [[A, B]].T * S_{k+1} * [[A, B]] = [[Qxx, Qxu], [Qux, Quu]]
+            q = c + F.T * v = c + [[A, B]].T * s_{k+1} = [qx, qu]
             """
             if t == T-1:
                 Qt = C[t]
@@ -189,7 +198,7 @@ def LQRStep(n_state,
             ks.append(kt)
 
             """
-            Modification needed: terminal cost.
+            Modification done: terminal cost.
             Before modifying, Ks[T-1] and ks[T-1] 's nan value will cause Vtp1 and vtp1 to be nan. Then the backward pass will all be nan.
             After modifying this part, Ks[T-1] and ks[T-1] will still be nan. But it doesn't matter anymore.
             And nan Ks[T-1] and ks[T-1] will not influence the forward pass, too. 
@@ -200,13 +209,17 @@ def LQRStep(n_state,
 
             The tail problem at the final timestamp is not considered in this implementation. Tail problem formula:
             Vtp1 = Qf
-            vtp1 = Qf \delta_x (to be verified)
+            vtp1 = Qf (xN - xf) 
             """
 
-            Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
-            vtp1 = qt_x + Qt_xu.bmm(kt.unsqueeze(2)).squeeze(2) + \
-                Kt_T.bmm(qt_u.unsqueeze(2)).squeeze(2) + \
-                Kt_T.bmm(Qt_uu).bmm(kt.unsqueeze(2)).squeeze(2)
+            if t == T-1:
+                Vtp1 = Qt
+                vtp1 = qt
+            else:
+                Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
+                vtp1 = qt_x + Qt_xu.bmm(kt.unsqueeze(2)).squeeze(2) + \
+                    Kt_T.bmm(qt_u.unsqueeze(2)).squeeze(2) + \
+                    Kt_T.bmm(Qt_uu).bmm(kt.unsqueeze(2)).squeeze(2)
 
         return Ks, ks, n_total_qp_iter
 
@@ -290,9 +303,12 @@ def LQRStep(n_state,
                     obj = 0.5*util.bquad(new_xut, C[t]) + util.bdot(new_xut, c[t])
                 else:
                     """
-                    Modification needed: terminal cost.
+                    Modification done: terminal cost.
                     """
-                    obj = true_cost(new_xut)
+                    if t == T-1:
+                        obj = true_cost(new_xut, terminal=True)
+                    else:
+                        obj = true_cost(new_xut)
 
                 objs.append(obj)
 
