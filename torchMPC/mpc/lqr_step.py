@@ -113,54 +113,54 @@ def LQRStep(n_state,
             Corresponds to the formula of feedback control law: u* = Kt*x + kt.
             """
             if u_lower is None:
-                if n_ctrl == 1 and u_zero_I is None:
-                    """
-                    This is where the problem happens when Qt_uu=0.
-                    In our simplest example, n_ctrl=1, and Qt_uu=0 at the final timestamp.
-                    """
-                    Kt = -(1./Qt_uu)*Qt_ux
-                    kt = -(1./Qt_uu.squeeze(2))*qt_u
+                # if n_ctrl == 1 and u_zero_I is None:
+                #     """
+                #     This is where the problem happens when Qt_uu=0.
+                #     In our simplest example, n_ctrl=1, and Qt_uu=0 at the final timestamp.
+                #     """
+                #     Kt = -(1./Qt_uu)*Qt_ux
+                #     kt = -(1./Qt_uu.squeeze(2))*qt_u
+                # else:
+                if u_zero_I is None:
+                    Qt_uu_inv = [
+                        torch.pinverse(Qt_uu[i]) for i in range(Qt_uu.shape[0])
+                    ]
+                    Qt_uu_inv = torch.stack(Qt_uu_inv)
+                    Kt = -Qt_uu_inv.bmm(Qt_ux)
+                    kt = util.bmv(-Qt_uu_inv, qt_u)
+
+                    # Qt_uu_LU = Qt_uu.lu()
+                    # Kt = -Qt_ux.lu_solve(*Qt_uu_LU)
+                    # kt = -qt_u.lu_solve(*Qt_uu_LU)
                 else:
-                    if u_zero_I is None:
-                        Qt_uu_inv = [
-                            torch.pinverse(Qt_uu[i]) for i in range(Qt_uu.shape[0])
-                        ]
-                        Qt_uu_inv = torch.stack(Qt_uu_inv)
-                        Kt = -Qt_uu_inv.bmm(Qt_ux)
-                        kt = util.bmv(-Qt_uu_inv, qt_u)
+                    # Solve with zero constraints on the active controls.
+                    I = u_zero_I[t].float()
+                    notI = 1-I
 
-                        # Qt_uu_LU = Qt_uu.lu()
-                        # Kt = -Qt_ux.lu_solve(*Qt_uu_LU)
-                        # kt = -qt_u.lu_solve(*Qt_uu_LU)
+                    qt_u_ = qt_u.clone()
+                    qt_u_[I.bool()] = 0
+
+                    Qt_uu_ = Qt_uu.clone()
+
+                    if I.is_cuda:
+                        notI_ = notI.float()
+                        Qt_uu_I = (1-util.bger(notI_, notI_)).type_as(I)
                     else:
-                        # Solve with zero constraints on the active controls.
-                        I = u_zero_I[t].float()
-                        notI = 1-I
+                        Qt_uu_I = 1-util.bger(notI, notI)
 
-                        qt_u_ = qt_u.clone()
-                        qt_u_[I.bool()] = 0
+                    Qt_uu_[Qt_uu_I.bool()] = 0.
+                    Qt_uu_[util.bdiag(I).bool()] += 1e-8
 
-                        Qt_uu_ = Qt_uu.clone()
+                    Qt_ux_ = Qt_ux.clone()
+                    Qt_ux_[I.unsqueeze(2).repeat(1,1,Qt_ux.size(2)).bool()] = 0.
 
-                        if I.is_cuda:
-                            notI_ = notI.float()
-                            Qt_uu_I = (1-util.bger(notI_, notI_)).type_as(I)
-                        else:
-                            Qt_uu_I = 1-util.bger(notI, notI)
-
-                        Qt_uu_[Qt_uu_I.bool()] = 0.
-                        Qt_uu_[util.bdiag(I).bool()] += 1e-8
-
-                        Qt_ux_ = Qt_ux.clone()
-                        Qt_ux_[I.unsqueeze(2).repeat(1,1,Qt_ux.size(2)).bool()] = 0.
-
-                        if n_ctrl == 1:
-                            Kt = -(1./Qt_uu_)*Qt_ux_
-                            kt = -(1./Qt_uu.squeeze(2))*qt_u_
-                        else:
-                            Qt_uu_LU_ = Qt_uu_.lu()
-                            Kt = -Qt_ux_.lu_solve(*Qt_uu_LU_)
-                            kt = -qt_u_.unsqueeze(2).lu_solve(*Qt_uu_LU_).squeeze(2)
+                    if n_ctrl == 1:
+                        Kt = -(1./Qt_uu_)*Qt_ux_
+                        kt = -(1./Qt_uu.squeeze(2))*qt_u_
+                    else:
+                        Qt_uu_LU_ = Qt_uu_.lu()
+                        Kt = -Qt_ux_.lu_solve(*Qt_uu_LU_)
+                        kt = -qt_u_.unsqueeze(2).lu_solve(*Qt_uu_LU_).squeeze(2)
             else:
                 """
                 When u is box-constrained, we need to solve a QP using PNQP.
@@ -212,14 +212,10 @@ def LQRStep(n_state,
             vtp1 = Qf (xN - xf) 
             """
 
-            if t == T-1:
-                Vtp1 = Qt
-                vtp1 = qt
-            else:
-                Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
-                vtp1 = qt_x + Qt_xu.bmm(kt.unsqueeze(2)).squeeze(2) + \
-                    Kt_T.bmm(qt_u.unsqueeze(2)).squeeze(2) + \
-                    Kt_T.bmm(Qt_uu).bmm(kt.unsqueeze(2)).squeeze(2)
+            Vtp1 = Qt_xx + Qt_xu.bmm(Kt) + Kt_T.bmm(Qt_ux) + Kt_T.bmm(Qt_uu).bmm(Kt)
+            vtp1 = qt_x + Qt_xu.bmm(kt.unsqueeze(2)).squeeze(2) + \
+                Kt_T.bmm(qt_u.unsqueeze(2)).squeeze(2) + \
+                Kt_T.bmm(Qt_uu).bmm(kt.unsqueeze(2)).squeeze(2)
 
         return Ks, ks, n_total_qp_iter
 
