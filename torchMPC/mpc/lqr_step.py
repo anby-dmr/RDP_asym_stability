@@ -383,7 +383,7 @@ def LQRStep(n_state,
               for_out.costs, for_out.full_du_norm, for_out.mean_alphas
 
         @staticmethod
-        def backward(ctx, dl_dx, dl_du, temp=None, temp2=None):
+        def backward(ctx, dl_dx, dl_du, temp=None, temp2=None, temp3=None, temp4=None):
             start = time.time()
             x_init, C, c, F, f, new_x, new_u = ctx.saved_tensors
 
