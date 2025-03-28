@@ -113,11 +113,14 @@ def LQRStep(n_state,
             Corresponds to the formula of feedback control law: u* = Kt*x + kt.
             """
             if u_lower is None:
+                """
+                Modification done: terminal cost.
+                """
                 # if n_ctrl == 1 and u_zero_I is None:
                 #     """
                 #     This is where the problem happens when Qt_uu=0.
                 #     In our simplest example, n_ctrl=1, and Qt_uu=0 at the final timestamp.
-                #     """
+                #     """ 
                 #     Kt = -(1./Qt_uu)*Qt_ux
                 #     kt = -(1./Qt_uu.squeeze(2))*qt_u
                 # else:
@@ -166,6 +169,8 @@ def LQRStep(n_state,
                 When u is box-constrained, we need to solve a QP using PNQP.
                 In our study, u is not constrained.
                 However, if use env such as CartPole, u is constrained.
+
+                Don't know whether this part needs to be modified or not.
                 """
                 assert delta_space
                 lb = get_bound('lower', t) - u[t]
@@ -198,7 +203,6 @@ def LQRStep(n_state,
             ks.append(kt)
 
             """
-            Modification done: terminal cost.
             Before modifying, Ks[T-1] and ks[T-1] 's nan value will cause Vtp1 and vtp1 to be nan. Then the backward pass will all be nan.
             After modifying this part, Ks[T-1] and ks[T-1] will still be nan. But it doesn't matter anymore.
             And nan Ks[T-1] and ks[T-1] will not influence the forward pass, too. 
