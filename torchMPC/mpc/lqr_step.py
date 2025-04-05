@@ -167,10 +167,7 @@ def LQRStep(n_state,
             else:
                 """
                 When u is box-constrained, we need to solve a QP using PNQP.
-                In our study, u is not constrained.
-                However, if use env such as CartPole, u is constrained.
-
-                Don't know whether this part needs to be modified or not.
+                n_total_qp_iter is used for monitoring the number of QP iterations. Not used for anything else.
                 """
                 assert delta_space
                 lb = get_bound('lower', t) - u[t]
@@ -199,6 +196,9 @@ def LQRStep(n_state,
             Ks and ks at the final timestamp make no sense.
             Because no control is applied at the final timestamp.
             """
+            if t == T-1:
+                Kt.fill_(0.)
+                kt.fill_(0.)
             Ks.append(Kt)
             ks.append(kt)
 
