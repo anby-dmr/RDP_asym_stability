@@ -99,7 +99,13 @@ class CartpoleDx(nn.Module):
         state = util.get_data_maybe(state.view(-1))
         assert len(state) == 5
         x, dx, cos_th, sin_th, dth = torch.unbind(state)
+
+        x = x.item()   
+        cos_th = cos_th.item()
+        sin_th = sin_th.item()
+
         gravity, masscart, masspole, length = torch.unbind(self.params)
+        length = length.item()
         th = np.arctan2(sin_th, cos_th)
         th_x = sin_th*length
         th_y = cos_th*length
