@@ -177,7 +177,7 @@ def LQRStep(n_state,
                     ub[ub > delta_u] = delta_u
                 kt, Qt_uu_free_LU, If, n_qp_iter = pnqp(
                     Qt_uu, qt_u, lb, ub,
-                    x_init=prev_kt, n_iter=20)
+                    x_init=prev_kt, n_iter=100)
                 if verbose > 1:
                     print('  + n_qp_iter: ', n_qp_iter+1)
                 n_total_qp_iter += 1+n_qp_iter
