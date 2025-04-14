@@ -289,6 +289,8 @@ class MPC(Module):
                     ('iter', i),
                     ('mean(cost)', torch.mean(best['costs']).item(), '{:.4e}'),
                     ('||full_du||_max', max(full_du_norm).item(), '{:.2e}'),
+                    ('||full_du||_min', min(full_du_norm).item(), '{:.2e}'),
+                    ('||full_du||_mean', full_du_norm.mean().item(), '{:.2e}'),
                     # ('||alpha_du||_max', max(alpha_du_norm), '{:.2e}'),
                     # TODO: alphas, total_qp_iters here is for the current
                     # iterate, not the best
@@ -296,6 +298,8 @@ class MPC(Module):
                     ('total_qp_iters', n_total_qp_iter),
                 ))
 
+            # 提前退出的条件1: du_norm小于eps
+            # 提前退出的条件2: n_not_improved, 即连续not_improved_lim次迭代后，值函数均值仍然没有改善
             if max(full_du_norm) < self.eps or \
                n_not_improved > self.not_improved_lim:
                 break
