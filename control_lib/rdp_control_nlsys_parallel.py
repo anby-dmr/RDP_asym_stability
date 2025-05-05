@@ -147,12 +147,13 @@ def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u
 
 if __name__ == '__main__':
     # Experiment params
-    epochs = 100
+    epochs = 400
     batch_size = 32
     lr = 0.1
-    max_workers = 7
-    test_name = 'Parallel_lr0.1_again_again'
-    log_path = 'D:/Docs/code_lib/graduation_test/control_lib/log_path' + f'/{test_name}.txt'
+    max_workers = 6
+    test_name = 'Parallel_lr0.1_formal'
+    log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
+    log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # System params
@@ -170,7 +171,10 @@ if __name__ == '__main__':
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm(range(100, epochs)):
+        # Save model params
+        torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
+        torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
         Q_list.append(Q.data.T @ Q.data)
         F_list.append(F.data.T @ F.data)
         with open(log_path, 'a') as f:
@@ -216,4 +220,3 @@ if __name__ == '__main__':
     
     print(Q)
     print(F)
-    plt.plot(loss_list)
