@@ -9,10 +9,10 @@ from functools import partial # Useful for passing fixed arguments
 from tqdm import tqdm
 print("GOGOGO!!!")
 
-my_inf = np.inf
 ref = np.array([0., 0., 1., 0., 0.])
-state_lower = [-my_inf, -my_inf, np.cos(15/180 * np.pi), np.sin(-15/180 * np.pi), -my_inf]
-state_upper = [my_inf, my_inf, np.cos(0), np.sin(15/180 * np.pi), my_inf]
+# my_inf = np.inf
+# state_lower = [-my_inf, -my_inf, np.cos(15/180 * np.pi), np.sin(-15/180 * np.pi), -my_inf]
+# state_upper = [my_inf, my_inf, np.cos(0), np.sin(15/180 * np.pi), my_inf]
 
 """
 OCP utils
@@ -80,12 +80,6 @@ def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
     terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None)
     result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost)
     return result
-
-def state_constraint(state):
-    for i in range(len(state)):
-        if state[i] < state_lower[i] or state[i] > state_upper[i]:
-            return False
-    return True
 
 """
 MPC utils
@@ -166,22 +160,22 @@ def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u
 
 if __name__ == '__main__':
     # Experiment params
-    epochs = 200
+    epochs = 50
     batch_size = 32
-    lr = 0.1
+    lr = 0.01
     max_workers = 7
-    test_name = 'Parallel_lr0.1_ref2'
+    test_name = 'OCP300_degree15_linearInit'
     log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # System params
-    load_params = False
+    load_params = True
     cartpole_sys = get_cartpole_sys()
     if load_params:
         print("Loading params....")
-        Q_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/Parallel_lr0.1_ref_Q_99.pt')
-        F_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/Parallel_lr0.1_ref_F_99.pt')
+        Q_data = torch.load('D:/Docs/code_lib/graduation_test/Q_tensor_test_5dim.pth')
+        F_data = torch.load('D:/Docs/code_lib/graduation_test/Qf_tensor_5dim.pth')
     else:
         Q_data = torch.randn(5, 5, device=device)
         F_data = torch.randn(5, 5, device=device)
@@ -198,7 +192,7 @@ if __name__ == '__main__':
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
-    for epoch in tqdm(range(100, epochs)):
+    for epoch in tqdm(range(epochs)):
         # Save model params
         torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
         torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
