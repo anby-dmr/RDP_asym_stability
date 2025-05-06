@@ -156,20 +156,28 @@ def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u
 
 if __name__ == '__main__':
     # Experiment params
-    epochs = 100
+    epochs = 200
     batch_size = 32
     lr = 0.1
-    max_workers = 6
+    max_workers = 7
     test_name = 'Parallel_lr0.1_ref2'
     log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # System params
+    load_params = False
     cartpole_sys = get_cartpole_sys()
-    Q = nn.Parameter(torch.randn(5, 5, device=device))
+    if load_params:
+        print("Loading params....")
+        Q_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/Parallel_lr0.1_ref_Q_99.pt')
+        F_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/Parallel_lr0.1_ref_F_99.pt')
+    else:
+        Q_data = torch.randn(5, 5, device=device)
+        F_data = torch.randn(5, 5, device=device)
+    Q = nn.Parameter(Q_data)
     R = torch.Tensor([[1.]]).to(device)
-    F = nn.Parameter(torch.randn(5, 5, device=device))
+    F = nn.Parameter(F_data)
     MPC_T = 100
     T = 30
     u_lower = -100
@@ -180,7 +188,7 @@ if __name__ == '__main__':
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm(range(100, epochs)):
         # Save model params
         torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
         torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
