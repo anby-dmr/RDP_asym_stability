@@ -9,7 +9,10 @@ from functools import partial # Useful for passing fixed arguments
 from tqdm import tqdm
 print("GOGOGO!!!")
 
+my_inf = np.inf
 ref = np.array([0., 0., 1., 0., 0.])
+state_lower = [-my_inf, -my_inf, np.cos(15/180 * np.pi), np.sin(-15/180 * np.pi), -my_inf]
+state_upper = [my_inf, my_inf, np.cos(0), np.sin(15/180 * np.pi), my_inf]
 
 """
 OCP utils
@@ -55,8 +58,9 @@ def uniform(shape, low, high):
     r = high - low
     return np.random.rand(*shape) * r + low
 
-def cartpole_initx(n_batch):
-    th = uniform((n_batch, 1), -2*np.pi, 2*np.pi)
+def cartpole_initx(n_batch, angle=180):
+    ratio = angle / 180
+    th = uniform((n_batch, 1), -ratio*np.pi, ratio*np.pi)
     thdot = uniform((n_batch, 1), -.5, .5)
     x = uniform((n_batch, 1), -0.5, 0.5)
     xdot = uniform((n_batch, 1), -0.5, 0.5)
@@ -74,8 +78,14 @@ def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
     constraints = [opt.input_range_constraint(cartpole_sys, lower, upper)]
     running_cost = opt.quadratic_cost(cartpole_sys, Q, R)
     terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None)
-    result = opt.solve_ocp(cartpole_sys, timepts, x0, running_cost, constraints, terminal_cost)
+    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost)
     return result
+
+def state_constraint(state):
+    for i in range(len(state)):
+        if state[i] < state_lower[i] or state[i] > state_upper[i]:
+            return False
+    return True
 
 """
 MPC utils
@@ -200,7 +210,7 @@ if __name__ == '__main__':
         loss = 0.0
         # Forward: Sampling use multiprocess MPC
         Q0, R0, F0 = Q.detach().cpu().numpy(), R.detach().cpu().numpy(), F.detach().cpu().numpy() # use cpu().numpy() to share memory with original tensor
-        initial_states = cartpole_initx(batch_size)
+        initial_states = cartpole_initx(batch_size, angle=15)
         results = solve_multi_mpc(initial_states, cartpole_sys, Q0.T @ Q0, R0, F0.T @ F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
 
         """
