@@ -9,10 +9,17 @@ from functools import partial # Useful for passing fixed arguments
 from tqdm import tqdm
 print("GOGOGO!!!")
 
+ref = np.array([0., 0., 1., 0., 0.])
+
 """
 OCP utils
 """
 def cartpole_update(t, states, inputs, params):
+    """
+    We will pass (x - ref) as states. 
+    But transition should be done on the original state.
+    """
+    states = states + ref
     gravity, masscart, masspole, length = params
     total_mass = masspole + masscart
     polemass_length = masspole * length
@@ -36,7 +43,9 @@ def cartpole_update(t, states, inputs, params):
     th = th + dt * dth
     dth = dth + dt * th_acc
 
-    return np.array([x, dx, np.cos(th), np.sin(th), dth])
+    next_states = np.array([x, dx, np.cos(th), np.sin(th), dth])
+
+    return next_states - ref
 
 def get_cartpole_sys():
     cartpole_sys = ct.nlsys(updfcn=cartpole_update, outfcn=cartpole_update, inputs=1, outputs=5, states=5, params=[9.8, 1.0, 0.1, 0.5], name='cartpole_sys', dt=1)
@@ -52,7 +61,7 @@ def cartpole_initx(n_batch):
     x = uniform((n_batch, 1), -0.5, 0.5)
     xdot = uniform((n_batch, 1), -0.5, 0.5)
     xinit = np.concatenate((x, xdot, np.cos(th), np.sin(th), thdot), axis=1)
-    return xinit
+    return xinit - ref
 
 def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
     """
@@ -147,11 +156,11 @@ def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u
 
 if __name__ == '__main__':
     # Experiment params
-    epochs = 400
+    epochs = 100
     batch_size = 32
     lr = 0.1
     max_workers = 6
-    test_name = 'Parallel_lr0.1_formal'
+    test_name = 'Parallel_lr0.1_ref2'
     log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,7 +180,7 @@ if __name__ == '__main__':
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
-    for epoch in tqdm(range(100, epochs)):
+    for epoch in tqdm(range(epochs)):
         # Save model params
         torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
         torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
