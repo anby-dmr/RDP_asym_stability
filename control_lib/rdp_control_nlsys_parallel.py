@@ -158,13 +158,18 @@ def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u
         results_all = list(results_iter)
     return results_all
 
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
 if __name__ == '__main__':
     # Experiment params
-    epochs = 50
-    batch_size = 1
-    lr = 0.01
+    epochs = 100
+    batch_size = 32
+    lr = 0.001
     max_workers = 7
-    test_name = 'OCP300_degree15_linearInit'
+    test_name = 'Parallel_lr0.001_T100'
     log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -174,26 +179,16 @@ if __name__ == '__main__':
     cartpole_sys = get_cartpole_sys()
     if load_params:
         print("Loading params....")
-        # Q_data = torch.load('D:/Docs/code_lib/graduation_test/Q_tensor_test_5dim.pth').to(device)
-        # F_data = torch.load('D:/Docs/code_lib/graduation_test/Qf_tensor_5dim.pth').to(device)
-        Q_data = torch.tensor([[-1.7734e-02, -8.8569e-02,  2.4331e-04,  7.7437e-01,  9.5532e-01],
-        [-1.2750e-02,  2.5982e-02,  1.9449e-04, -4.0806e-01,  2.6715e-01],
-        [-1.4288e-02, -7.5010e-02,  3.0087e-04,  3.0775e-01,  7.7770e-01],
-        [-2.0422e-02,  4.9010e-02, -1.5912e-04, -4.1044e-01,  3.3453e-01],
-        [-2.8305e-02,  7.2792e-03,  1.4851e-04, -4.3044e-01,  8.1992e-01]]).to(device)
-        F_data = torch.tensor([[-0.0550, -0.0332,  0.2356,  1.3808,  1.6040],
-        [-0.0108, -0.1860, -0.1911,  3.3550,  1.8036],
-        [ 0.1025, -0.6454,  0.0852,  2.1742,  1.2791],
-        [-0.1784,  0.6742,  0.0060,  2.4674,  1.4243],
-        [-0.0565,  0.0411, -0.0784,  1.6239,  1.4481]]).to(device)
+        Q_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_Q_18.pt').to(device)
+        F_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_F_18.pt').to(device)
     else:
         Q_data = torch.randn(5, 5, device=device)
         F_data = torch.randn(5, 5, device=device)
     Q = nn.Parameter(Q_data)
     R = torch.Tensor([[1.]]).to(device)
     F = nn.Parameter(F_data)
-    MPC_T = 300
-    T = 300
+    MPC_T = 100
+    T = 100
     u_lower = -100
     u_upper = 100
 
@@ -202,10 +197,18 @@ if __name__ == '__main__':
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
+    if load_params:
+        optimizer.load_state_dict(torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_Opt_18.pth'))
+        print("Load optimizer params success!")
+        # change lr 
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
     for epoch in tqdm(range(epochs)):
         # Save model params
         torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
         torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
+        # Save optimizer state
+        torch.save(optimizer.state_dict(), log_path_root + f'/{test_name}_Opt_{epoch}.pth')
         Q_list.append(Q.data.T @ Q.data)
         F_list.append(F.data.T @ F.data)
         with open(log_path, 'a') as f:
@@ -214,7 +217,7 @@ if __name__ == '__main__':
         loss = 0.0
         # Forward: Sampling use multiprocess MPC
         Q0, R0, F0 = Q.detach().cpu().numpy(), R.detach().cpu().numpy(), F.detach().cpu().numpy() # use cpu().numpy() to share memory with original tensor
-        initial_states = cartpole_initx(batch_size, angle=15)
+        initial_states = cartpole_initx(batch_size)
         results = solve_multi_mpc(initial_states, cartpole_sys, Q0.T @ Q0, R0, F0.T @ F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
 
         """
