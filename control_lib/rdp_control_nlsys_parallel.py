@@ -78,7 +78,8 @@ def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
     constraints = [opt.input_range_constraint(cartpole_sys, lower, upper)]
     running_cost = opt.quadratic_cost(cartpole_sys, Q, R)
     terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None)
-    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, trajectory_constraints=constraints, terminal_cost=terminal_cost)
+    # result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, trajectory_constraints=constraints, terminal_cost=terminal_cost)
+    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost)
     return result
 
 """
@@ -115,17 +116,30 @@ def VN_cartpole_multi(results_states, results_inputs, Q, R, Qf):
 
     return VN_list
 
+def bounded_weight_penalty(Q, F, min_val=0.05, max_val=2.0, lambda_penalty=0.8):
+    penalty = 0.0
+    penalty += torch.sum(torch.relu(min_val - torch.abs(Q)))  
+    penalty += torch.sum(torch.relu(torch.abs(Q) - max_val))  
+    penalty += torch.sum(torch.relu(min_val - torch.abs(F)))  
+    penalty += torch.sum(torch.relu(torch.abs(F) - max_val))  
+    return lambda_penalty * penalty
+
 def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, R, Qf, MPC_T, func, test=False, log_path=None):
-    loss = 0
+    lossRDP = 0
+    lossLyap = 0
     for i in range(MPC_T - 1):
         RDP = (VN_list[i+1] + alpha * cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, R, Qf, False)) - VN_list[i] # Wish RDP <= 0
+        Lyap = cost_cartpole(x_list[i+1].unsqueeze(2), None, Q, R, Qf, True) + \
+               cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, R, Qf, False) - \
+               cost_cartpole(x_list[i].unsqueeze(2), None, Q, R, Qf, True) 
 
         if test:
             if log_path is not None:
                 with open(log_path, 'a') as f:
                     f.write(f'RDP{i}: {RDP}\n')
-        loss += func(RDP)
-    return loss
+        lossRDP += func(RDP)
+        lossLyap += func(Lyap)
+    return lossRDP, lossLyap
 
 def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upper):
     x = x_init
@@ -164,18 +178,23 @@ def set_seed(seed):
     np.random.seed(seed)
 
 if __name__ == '__main__':
+    set_seed(42)
     # Experiment params
     epochs = 100
     batch_size = 32
-    lr = 0.001
+    lr = 0.01
     max_workers = 7
-    test_name = 'Parallel_lr0.001_T100'
-    log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
+    weight_min = 0.05
+    weight_max = 2.0
+    lambda_weight = 0.8
+    test_name = 'test_mpc_torch'
+    # log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
+    log_path_root = './'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # System params
-    load_params = True
+    load_params = False
     cartpole_sys = get_cartpole_sys()
     if load_params:
         print("Loading params....")
@@ -184,16 +203,25 @@ if __name__ == '__main__':
     else:
         Q_data = torch.randn(5, 5, device=device)
         F_data = torch.randn(5, 5, device=device)
+
+    test_mpc_torch = True
+    if test_mpc_torch:
+        q = torch.tensor([0.1, 0.1, 1., 1., 0.1])
+        Q_data = torch.sqrt(torch.diag(q)).to(device)
+        rand_Q_bias = torch.randn(5, 5).to(device) * 0.001
+        Q_data = Q_data + rand_Q_bias
+
     Q = nn.Parameter(Q_data)
-    R = torch.Tensor([[1.]]).to(device)
-    F = nn.Parameter(F_data)
-    MPC_T = 100
-    T = 100
+    R = torch.Tensor([[0.01]]).to(device)
+    if test_mpc_torch:
+        F = Q
+    else:
+        F = nn.Parameter(F_data)
+    MPC_T = 30
+    T = 30
     u_lower = -100
     u_upper = 100
 
-    Q_list = []
-    F_list = []
     loss_list = []
     # Train
     optimizer = torch.optim.Adam([Q, F], lr=lr)
@@ -209,8 +237,7 @@ if __name__ == '__main__':
         torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
         # Save optimizer state
         torch.save(optimizer.state_dict(), log_path_root + f'/{test_name}_Opt_{epoch}.pth')
-        Q_list.append(Q.data.T @ Q.data)
-        F_list.append(F.data.T @ F.data)
+
         with open(log_path, 'a') as f:
             f.write(f'epoch: {epoch}, Q: {Q.T @ Q}\n, F: {F.T @ F}\n')
 
@@ -219,6 +246,7 @@ if __name__ == '__main__':
         Q0, R0, F0 = Q.detach().cpu().numpy(), R.detach().cpu().numpy(), F.detach().cpu().numpy() # use cpu().numpy() to share memory with original tensor
         initial_states = cartpole_initx(batch_size)
         results = solve_multi_mpc(initial_states, cartpole_sys, Q0.T @ Q0, R0, F0.T @ F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
+        # results = solve_multi_mpc(initial_states, cartpole_sys, Q0, R0, F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
 
         """
         results shape: (n_batch, 2, MPC_T, n_state/n_ctrl, T), list[list[list[array]]]
@@ -241,7 +269,18 @@ if __name__ == '__main__':
         x_list = results_states[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_state)
         u_list = results_inputs[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_ctrl)
         VN_list = VN_cartpole_multi(results_states, results_inputs, Q.T @ Q, R, F.T @ F)
-        loss += RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q.T @ Q, R, F.T @ F, MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path).mean()
+        # VN_list = VN_cartpole_multi(results_states, results_inputs, Q, R, F)
+        lossRDP, lossLyap = RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q.T @ Q, R, F.T @ F, 
+                                                  MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path)
+        lossRDP = lossRDP.mean()
+        lossLyap = lossLyap.mean()
+        # loss += RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q, R, F, MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path).mean()
+        # bound_penalty = bounded_weight_penalty(Q, F, weight_min, weight_max, lambda_weight)
+        loss += lossRDP + lossLyap
+        with open(log_path, 'a') as f:
+            # f.write(f'bound_penalty: {bound_penalty}\n')
+            f.write(f'lossRDP: {lossRDP}\n')
+            f.write(f'lossLyap: {lossLyap}\n')
 
         # Backward: Training use RDP
         optimizer.zero_grad()
