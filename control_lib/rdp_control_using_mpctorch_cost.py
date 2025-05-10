@@ -67,7 +67,7 @@ def cartpole_initx(n_batch, angle=180):
     xinit = np.concatenate((x, xdot, np.cos(th), np.sin(th), thdot), axis=1)
     return xinit - ref
 
-def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
+def solve_ocp(x0, cartpole_sys, timepts, Q, q, R, lower, upper):
     """
         Q: n_array, n_state x n_state
         R: n_array, n_ctrl x n_ctrl
@@ -76,29 +76,54 @@ def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
         upper: n_array, n_ctrl x 1
     """
     constraints = [opt.input_range_constraint(cartpole_sys, lower, upper)]
-    running_cost = opt.quadratic_cost(cartpole_sys, Q, R)
-    terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None)
+    running_cost = partial(mpc_torch_running_cost, Q=Q, q=q, R=R)
     # result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, trajectory_constraints=constraints, terminal_cost=terminal_cost)
-    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost)
+    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost)
     return result
+
+def mpc_torch_running_cost(x, u, Q, q, R):
+    """
+    All numpy arrays.
+    x shape: (n_state,)
+    u shape: (n_ctrl,)
+    Q shape: (n_state, n_state)
+    q shape: (n_state,)
+    R shape: (n_ctrl, n_ctrl)
+    use numpy to compute
+    """
+    x = np.array(x)
+    u = np.array(u)
+    Q = np.array(Q)
+    q = np.array(q)
+    R = np.array(R)
+    # x^T Q x + q^T x
+    state_cost = np.matmul(np.matmul(x.T, Q), x) + np.matmul(q.T, x)
+    # u^T R u
+    ctrl_cost = np.matmul(np.matmul(u.T, R), u)
+    return state_cost + ctrl_cost
+
+def mpc_torch_terminal_cost(x, u, Q, q):
+    return np.matmul(np.matmul(x.T, Q), x) + np.matmul(q.T, x)
 
 """
 MPC utils
 """
-def cost_cartpole(x, u, Q, R, Qf, is_terminal):
+def cost_cartpole(x, u, Q, q, R, is_terminal):
     """
     x shape: (n_batch, n_state, 1)
     u shape: (n_batch, n_ctrl, 1)
+    q shape: (n_state,)
 
     return shape: (n_batch, )
     """
     if is_terminal:
-        cost = torch.matmul(torch.matmul(x.transpose(1, 2), Qf), x)
+        cost = torch.matmul(torch.matmul(x.transpose(1, 2), Q), x) + torch.matmul(x.transpose(1, 2), q.unsqueeze(0).unsqueeze(-1))
     else:
-        cost = torch.matmul(torch.matmul(x.transpose(1, 2), Q), x) + torch.matmul(torch.matmul(u.transpose(1, 2), R), u)
+        cost = torch.matmul(torch.matmul(x.transpose(1, 2), Q), x) + torch.matmul(x.transpose(1, 2), q.unsqueeze(0).unsqueeze(-1)) + \
+               torch.matmul(torch.matmul(u.transpose(1, 2), R), u)
     return cost.squeeze(-1).squeeze(-1).squeeze(-1)
 
-def VN_cartpole_multi(results_states, results_inputs, Q, R, Qf):
+def VN_cartpole_multi(results_states, results_inputs, Q, q, R):
     """
     return shape: (n_batch, )
     """
@@ -109,21 +134,21 @@ def VN_cartpole_multi(results_states, results_inputs, Q, R, Qf):
         VN = 0
         for t in range(T):
             if t == T - 1:
-                VN += cost_cartpole(results_states[:, n, :, t].unsqueeze(2), results_inputs[:, n, :, t].unsqueeze(2), Q, R, Qf, True)
+                VN += cost_cartpole(results_states[:, n, :, t].unsqueeze(2), results_inputs[:, n, :, t].unsqueeze(2), Q, q, R, True)
             else:
-                VN += cost_cartpole(results_states[:, n, :, t].unsqueeze(2), results_inputs[:, n, :, t].unsqueeze(2), Q, R, Qf, False)
+                VN += cost_cartpole(results_states[:, n, :, t].unsqueeze(2), results_inputs[:, n, :, t].unsqueeze(2), Q, q, R, False)
         VN_list.append(VN)
 
     return VN_list
 
-def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, R, Qf, MPC_T, func, test=False, log_path=None):
+def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, q, R, MPC_T, func, test=False, log_path=None):
     lossRDP = 0
     lossLyap = 0
     for i in range(MPC_T - 1):
-        RDP = (VN_list[i+1] + alpha * cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, R, Qf, False)) - VN_list[i] # Wish RDP <= 0
-        Lyap = cost_cartpole(x_list[i+1].unsqueeze(2), None, Q, R, Qf, True) + \
-               cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, R, Qf, False) - \
-               cost_cartpole(x_list[i].unsqueeze(2), None, Q, R, Qf, True) 
+        RDP = (VN_list[i+1] + alpha * cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, q, R, False)) - VN_list[i] # Wish RDP <= 0
+        Lyap = cost_cartpole(x_list[i+1].unsqueeze(2), None, Q, q, R, True) + \
+               cost_cartpole(x_list[i].unsqueeze(2), u_list[i].unsqueeze(2), Q, q, R, False) - \
+               cost_cartpole(x_list[i].unsqueeze(2), None, Q, q, R, True) 
 
         if test:
             if log_path is not None:
@@ -133,7 +158,7 @@ def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, R, Qf, MPC_T, func,
         lossLyap += func(Lyap)
     return lossRDP, lossLyap
 
-def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upper):
+def mpc_cartpole_single(x_init, cartpole_sys, Q, q, R, MPC_T, T, u_lower, u_upper):
     x = x_init
 
     timepts = np.arange(0, T, 1)
@@ -143,7 +168,7 @@ def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upp
     x_list = []
     u_list = []
     for i in range(MPC_T):
-        result = solve_ocp(x, cartpole_sys, timepts, Q.data, R.data, Qf.data, lower, upper)
+        result = solve_ocp(x, cartpole_sys, timepts, Q.data, q.data, R.data, lower, upper)
         print(f"MPC Timestamp{i} success? : ", result.success)
         u = result.inputs[:, 0] # u: list size n_ctrl
         x_list.append(result.states)
@@ -151,13 +176,13 @@ def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upp
         x = result.states[:, 1] # x: list size n_state
     return x_list, u_list
 
-def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upper, max_workers=4):
+def solve_multi_mpc(initial_states, cartpole_sys, Q, q, R, MPC_T, T, u_lower, u_upper, max_workers=4):
     """
     initial_states: [state_1, state_2, ...], executor will automatically dispatch, even when n_batch > max_workers
     """
     solve_mpc_with_params = partial(mpc_cartpole_single, 
                                     cartpole_sys=cartpole_sys,
-                                    Q=Q, R=R, Qf=Qf, MPC_T=MPC_T, T=T, u_lower=u_lower, u_upper=u_upper)
+                                    Q=Q, q=q, R=R, MPC_T=MPC_T, T=T, u_lower=u_lower, u_upper=u_upper)
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         results_iter = executor.map(solve_mpc_with_params, initial_states)
@@ -172,19 +197,10 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
-def bounded_weight_penalty(Q, F, min_val=0.01, max_val=2.0, lambda_penalty=0.8):
-    penalty = 0.0
-    penalty += torch.sum(torch.relu(min_val - torch.abs(Q)))  
-    penalty += torch.sum(torch.relu(torch.abs(Q) - max_val))  
-    penalty += torch.sum(torch.relu(min_val - torch.abs(F)))  
-    penalty += torch.sum(torch.relu(torch.abs(F) - max_val))  
-    return lambda_penalty * penalty
-
-def inverse_square_weight_penalty(Q, F, lambda_param=0.01):
+def inverse_square_weight_penalty(Q, q, lambda_param=0.01):
     penalty = 0
     penalty += torch.sum(1.0 / (Q.pow(2) + 1e-8))
-    if F is not None:
-        penalty += torch.sum(1.0 / (F.pow(2) + 1e-8))
+    penalty += torch.sum(1.0 / (q.pow(2) + 1e-8))
     
     return lambda_param * penalty
 
@@ -195,39 +211,25 @@ if __name__ == '__main__':
     batch_size = 32
     lr = 0.01
     max_workers = 7
-    weight_min = 0.05
-    weight_max = 2.0
-    lambda_weight = 0.8
-    test_name = 'test_mpc_torch_diag'
-    log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
-    # log_path_root = './'
+    test_name = 'test_mpc_torch'
+    # log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
+    log_path_root = './'
     log_path = log_path_root + f'/{test_name}.txt'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # System params
-    load_params = False
     cartpole_sys = get_cartpole_sys()
-    if load_params:
-        print("Loading params....")
-        Q_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_Q_18.pt').to(device)
-        F_data = torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_F_18.pt').to(device)
-    else:
-        Q_data = torch.randn(5, 5, device=device)
-        F_data = torch.randn(5, 5, device=device)
 
-    test_mpc_torch = True
-    if test_mpc_torch:
-        q = torch.tensor([0.1, 0.1, 1., 1., 0.1]).to(device)
-        # Q_data = torch.sqrt(torch.diag(q)).to(device)
-        rand_q_bias = torch.randn(5, device=device) * 0.01
-        Q_data = q + rand_q_bias
 
-    Q_diag = nn.Parameter(Q_data)
+    target_weight = [0.1, 0.1, 1., 1., 0.1]
+    Q_data = torch.tensor(target_weight).to(device)
+    q_data = torch.tensor([0., 0., 1., 0., 0.]).to(device)
+    rand_q_bias = torch.randn(5).to(device) * 0.1
+
+    Q_ori = nn.Parameter(Q_data)
+    q = nn.Parameter(q_data)
     R = torch.Tensor([[0.001]]).to(device)
-    if test_mpc_torch:
-        F_diag = Q_diag
-    else:
-        F = nn.Parameter(F_data)
+
     MPC_T = 30
     T = 30
     u_lower = -100
@@ -235,31 +237,31 @@ if __name__ == '__main__':
 
     loss_list = []
     # Train
-    optimizer = torch.optim.Adam([Q_diag, F_diag], lr=lr)
+    load_params = False
+    optimizer = torch.optim.Adam([Q_ori, q], lr=lr)
     if load_params:
         optimizer.load_state_dict(torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_Opt_18.pth'))
         print("Load optimizer params success!")
         # change lr 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
+
     for epoch in tqdm(range(epochs)):
-        Q = torch.sqrt(torch.diag(Q_diag))
-        F = torch.sqrt(torch.diag(F_diag))
         # Save model params
-        torch.save(Q_diag.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
-        torch.save(F_diag.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
+        torch.save(Q_ori.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
+        torch.save(q.data, log_path_root + f'/{test_name}_q_{epoch}.pt')
         # Save optimizer state
         torch.save(optimizer.state_dict(), log_path_root + f'/{test_name}_Opt_{epoch}.pth')
 
+        Q = torch.diag(Q_ori)
         with open(log_path, 'a') as f:
-            f.write(f'epoch: {epoch}, Q: {Q.T @ Q}\n, F: {F.T @ F}\n')
+            f.write(f'epoch: {epoch}, Q: {Q}\n, q: {q}\n')
 
         loss = 0.0
         # Forward: Sampling use multiprocess MPC
-        Q0, R0, F0 = Q.detach().cpu().numpy(), R.detach().cpu().numpy(), F.detach().cpu().numpy() # use cpu().numpy() to share memory with original tensor
+        Q0, q0, R0 = Q.detach().cpu().numpy(), q.detach().cpu().numpy(), R.detach().cpu().numpy()
         initial_states = cartpole_initx(batch_size)
-        results = solve_multi_mpc(initial_states, cartpole_sys, Q0.T @ Q0, R0, F0.T @ F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
-        # results = solve_multi_mpc(initial_states, cartpole_sys, Q0, R0, F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
+        results = solve_multi_mpc(initial_states, cartpole_sys, Q0, q0, R0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
 
         """
         results shape: (n_batch, 2, MPC_T, n_state/n_ctrl, T), list[list[list[array]]]
@@ -281,15 +283,15 @@ if __name__ == '__main__':
         """
         x_list = results_states[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_state)
         u_list = results_inputs[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_ctrl)
-        VN_list = VN_cartpole_multi(results_states, results_inputs, Q.T @ Q, R, F.T @ F)
+        VN_list = VN_cartpole_multi(results_states, results_inputs, Q, q, R)
         # VN_list = VN_cartpole_multi(results_states, results_inputs, Q, R, F)
-        lossRDP, lossLyap = RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q.T @ Q, R, F.T @ F, 
+        lossRDP, lossLyap = RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q, q, R, 
                                                   MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path)
         lossRDP = lossRDP.mean()
         lossLyap = lossLyap.mean()
         # loss += RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q, R, F, MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path).mean()
         # bound_penalty = bounded_weight_penalty(Q, F, weight_min, weight_max, lambda_weight)
-        inverse_weight_penalty = inverse_square_weight_penalty(Q_diag, None)
+        inverse_weight_penalty = inverse_square_weight_penalty(Q, q)
         loss += lossRDP + lossLyap + inverse_weight_penalty
         with open(log_path, 'a') as f:
             # f.write(f'bound_penalty: {bound_penalty}\n')
@@ -307,4 +309,4 @@ if __name__ == '__main__':
             f.write(f'loss: {loss}\n')
     
     print(Q)
-    print(F)
+    print(q)

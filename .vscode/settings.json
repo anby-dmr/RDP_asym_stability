@@ -1,3 +1,4 @@
 {
-    "explorer.copyRelativePathSeparator": "/"
+    "explorer.copyRelativePathSeparator": "/",
+    "python.languageServer": "Jedi"
 }
