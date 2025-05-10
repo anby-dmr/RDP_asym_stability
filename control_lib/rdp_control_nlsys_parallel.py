@@ -116,13 +116,20 @@ def VN_cartpole_multi(results_states, results_inputs, Q, R, Qf):
 
     return VN_list
 
-def bounded_weight_penalty(Q, F, min_val=0.05, max_val=2.0, lambda_penalty=0.8):
+def bounded_weight_penalty(Q, F, min_val=0.01, max_val=2.0, lambda_penalty=0.8):
     penalty = 0.0
     penalty += torch.sum(torch.relu(min_val - torch.abs(Q)))  
     penalty += torch.sum(torch.relu(torch.abs(Q) - max_val))  
     penalty += torch.sum(torch.relu(min_val - torch.abs(F)))  
     penalty += torch.sum(torch.relu(torch.abs(F) - max_val))  
     return lambda_penalty * penalty
+
+def inverse_square_weight_penalty(Q, F, lambda_param=0.01):
+    penalty = 0
+    penalty += torch.sum(1.0 / (Q.pow(2) + 1e-8))
+    penalty += torch.sum(1.0 / (F.pow(2) + 1e-8))
+    
+    return lambda_param * penalty
 
 def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, R, Qf, MPC_T, func, test=False, log_path=None):
     lossRDP = 0
@@ -187,7 +194,7 @@ if __name__ == '__main__':
     weight_min = 0.05
     weight_max = 2.0
     lambda_weight = 0.8
-    test_name = 'test_mpc_torch'
+    test_name = 'test_mpc_torch_diag'
     # log_path_root = 'D:/Docs/code_lib/graduation_test/control_lib/log_path'
     log_path_root = './'
     log_path = log_path_root + f'/{test_name}.txt'
@@ -206,15 +213,16 @@ if __name__ == '__main__':
 
     test_mpc_torch = True
     if test_mpc_torch:
-        q = torch.tensor([0.1, 0.1, 1., 1., 0.1])
-        Q_data = torch.sqrt(torch.diag(q)).to(device)
-        rand_Q_bias = torch.randn(5, 5).to(device) * 0.001
-        Q_data = Q_data + rand_Q_bias
+        q = torch.tensor([0.1, 0.1, 1., 1., 0.1]).to(device)
+        # Q_data = torch.sqrt(torch.diag(q)).to(device)
+        # rand_Q_bias = torch.randn(5, 5).to(device) * 0.001
+        rand_q_bias = torch.randn(5).to(device) * 0.1
+        Q_data = q + rand_q_bias
 
-    Q = nn.Parameter(Q_data)
+    Q_diag = nn.Parameter(Q_data)
     R = torch.Tensor([[0.01]]).to(device)
     if test_mpc_torch:
-        F = Q
+        F_diag = Q_diag
     else:
         F = nn.Parameter(F_data)
     MPC_T = 30
@@ -224,7 +232,7 @@ if __name__ == '__main__':
 
     loss_list = []
     # Train
-    optimizer = torch.optim.Adam([Q, F], lr=lr)
+    optimizer = torch.optim.Adam([Q_diag, F_diag], lr=lr)
     if load_params:
         optimizer.load_state_dict(torch.load('D:/Docs/code_lib/graduation_test/control_lib/log_path/model_path/Parallel_lr0.001_ref5_Opt_18.pth'))
         print("Load optimizer params success!")
@@ -232,9 +240,11 @@ if __name__ == '__main__':
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
     for epoch in tqdm(range(epochs)):
+        Q = torch.sqrt(torch.diag(Q_diag))
+        F = torch.sqrt(torch.diag(F_diag))
         # Save model params
-        torch.save(Q.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
-        torch.save(F.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
+        torch.save(Q_diag.data, log_path_root + f'/{test_name}_Q_{epoch}.pt')
+        torch.save(F_diag.data, log_path_root + f'/{test_name}_F_{epoch}.pt')
         # Save optimizer state
         torch.save(optimizer.state_dict(), log_path_root + f'/{test_name}_Opt_{epoch}.pth')
 
@@ -276,11 +286,13 @@ if __name__ == '__main__':
         lossLyap = lossLyap.mean()
         # loss += RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q, R, F, MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path).mean()
         # bound_penalty = bounded_weight_penalty(Q, F, weight_min, weight_max, lambda_weight)
-        loss += lossRDP + lossLyap
+        inverse_weight_penalty = inverse_square_weight_penalty(Q, F)
+        loss += lossRDP + lossLyap + inverse_weight_penalty
         with open(log_path, 'a') as f:
             # f.write(f'bound_penalty: {bound_penalty}\n')
             f.write(f'lossRDP: {lossRDP}\n')
             f.write(f'lossLyap: {lossLyap}\n')
+            f.write(f'inverse_weight_penalty: {inverse_weight_penalty}\n')
 
         # Backward: Training use RDP
         optimizer.zero_grad()
