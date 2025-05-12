@@ -9,7 +9,7 @@ from functools import partial # Useful for passing fixed arguments
 from tqdm import tqdm
 print("GOGOGO!!!")
 
-ref = np.array([0., 0., 1., 0., 0.])
+ref = np.array([0., 0., 1., 0., 0.], dtype=np.float32)
 # my_inf = np.inf
 # state_lower = [-my_inf, -my_inf, np.cos(15/180 * np.pi), np.sin(-15/180 * np.pi), -my_inf]
 # state_upper = [my_inf, my_inf, np.cos(0), np.sin(15/180 * np.pi), my_inf]
@@ -22,7 +22,6 @@ def cartpole_update(t, states, inputs, params):
     We will pass (x - ref) as states. 
     But transition should be done on the original state.
     """
-    states = states + ref
     gravity, masscart, masspole, length = params
     total_mass = masspole + masscart
     polemass_length = masspole * length
@@ -48,7 +47,7 @@ def cartpole_update(t, states, inputs, params):
 
     next_states = np.array([x, dx, np.cos(th), np.sin(th), dth])
 
-    return next_states - ref
+    return next_states 
 
 def get_cartpole_sys():
     cartpole_sys = ct.nlsys(updfcn=cartpole_update, outfcn=cartpole_update, inputs=1, outputs=5, states=5, params=[9.8, 1.0, 0.1, 0.5], name='cartpole_sys', dt=1)
@@ -58,16 +57,16 @@ def uniform(shape, low, high):
     r = high - low
     return np.random.rand(*shape) * r + low
 
-def cartpole_initx(n_batch, angle=180):
+def cartpole_initx(n_batch, angle=180, range=1.):
     ratio = angle / 180
     th = uniform((n_batch, 1), -ratio*np.pi, ratio*np.pi)
-    thdot = uniform((n_batch, 1), -.5, .5)
-    x = uniform((n_batch, 1), -0.5, 0.5)
-    xdot = uniform((n_batch, 1), -0.5, 0.5)
+    thdot = uniform((n_batch, 1), -.5, .5) * range
+    x = uniform((n_batch, 1), -0.5, 0.5) * range
+    xdot = uniform((n_batch, 1), -0.5, 0.5) * range
     xinit = np.concatenate((x, xdot, np.cos(th), np.sin(th), thdot), axis=1)
-    return xinit - ref
+    return xinit
 
-def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
+def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, init_guess, lower, upper):
     """
         Q: n_array, n_state x n_state
         R: n_array, n_ctrl x n_ctrl
@@ -76,10 +75,10 @@ def solve_ocp(x0, cartpole_sys, timepts, Q, R, Qf, lower, upper):
         upper: n_array, n_ctrl x 1
     """
     constraints = [opt.input_range_constraint(cartpole_sys, lower, upper)]
-    running_cost = opt.quadratic_cost(cartpole_sys, Q, R)
-    terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None)
+    running_cost = opt.quadratic_cost(cartpole_sys, Q, R, x0=ref)
+    terminal_cost = opt.quadratic_cost(cartpole_sys, Qf, None, x0=ref)
     # result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, trajectory_constraints=constraints, terminal_cost=terminal_cost)
-    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost)
+    result = opt.solve_ocp(cartpole_sys, timepts, x0, cost=running_cost, terminal_cost=terminal_cost, initial_guess=init_guess)
     return result
 
 """
@@ -92,6 +91,7 @@ def cost_cartpole(x, u, Q, R, Qf, is_terminal):
 
     return shape: (n_batch, )
     """
+    x = x - torch.tensor(ref).unsqueeze(0).unsqueeze(-1).to(x.device)
     if is_terminal:
         cost = torch.matmul(torch.matmul(x.transpose(1, 2), Qf), x)
     else:
@@ -135,6 +135,7 @@ def RDP_criteria_cartpole(VN_list, x_list, u_list, alpha, Q, R, Qf, MPC_T, func,
 
 def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upper):
     x = x_init
+    u_init = None
 
     timepts = np.arange(0, T, 1)
     lower = u_lower
@@ -142,14 +143,20 @@ def mpc_cartpole_single(x_init, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upp
 
     x_list = []
     u_list = []
+    V_list = []
     for i in range(MPC_T):
-        result = solve_ocp(x, cartpole_sys, timepts, Q.data, R.data, Qf.data, lower, upper)
+        result = solve_ocp(x, cartpole_sys, timepts, Q.data, R.data, Qf.data, u_init, lower, upper)
         print(f"MPC Timestamp{i} success? : ", result.success)
-        u = result.inputs[:, 0] # u: list size n_ctrl
+        u = result.inputs[:, 0] # u: (n_ctrl, T)
         x_list.append(result.states)
         u_list.append(result.inputs)
-        x = result.states[:, 1] # x: list size n_state
-    return x_list, u_list
+        print(result.inputs)
+        x = result.states[:, 1] # x: (n_state, T)
+        V_list.append(result.cost)
+
+        u_init = result.inputs[:, 1:]
+        u_init = np.concatenate((u_init, np.zeros((1, 1))), axis=1)
+    return x_list, u_list, V_list
 
 def solve_multi_mpc(initial_states, cartpole_sys, Q, R, Qf, MPC_T, T, u_lower, u_upper, max_workers=4):
     """
@@ -172,14 +179,6 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
-def bounded_weight_penalty(Q, F, min_val=0.01, max_val=2.0, lambda_penalty=0.8):
-    penalty = 0.0
-    penalty += torch.sum(torch.relu(min_val - torch.abs(Q)))  
-    penalty += torch.sum(torch.relu(torch.abs(Q) - max_val))  
-    penalty += torch.sum(torch.relu(min_val - torch.abs(F)))  
-    penalty += torch.sum(torch.relu(torch.abs(F) - max_val))  
-    return lambda_penalty * penalty
-
 def inverse_square_weight_penalty(Q, F, lambda_param=0.01):
     penalty = 0
     penalty += torch.sum(1.0 / (Q.pow(2) + 1e-8))
@@ -192,7 +191,7 @@ if __name__ == '__main__':
     set_seed(42)
     # Experiment params
     epochs = 100
-    batch_size = 32
+    batch_size = 1
     lr = 0.01
     max_workers = 7
     weight_min = 0.05
@@ -228,8 +227,8 @@ if __name__ == '__main__':
         F_diag = Q_diag
     else:
         F = nn.Parameter(F_data)
-    MPC_T = 30
-    T = 30
+    MPC_T = 4
+    T = 4
     u_lower = -100
     u_upper = 100
 
@@ -262,13 +261,14 @@ if __name__ == '__main__':
         # results = solve_multi_mpc(initial_states, cartpole_sys, Q0, R0, F0, MPC_T, T, u_lower, u_upper, max_workers=max_workers)
 
         """
-        results shape: (n_batch, 2, MPC_T, n_state/n_ctrl, T), list[list[list[array]]]
+        results shape: (n_batch, 3, MPC_T, n_state/n_ctrl, T), list[list[list[array]]]
         Has inhomogeneous part, cant convert to numpy/tensor directly.
 
         Convert to numpy first, because convert list of numpy to tensor is slow.
         """
         results_states = torch.tensor(np.array([result[0] for result in results]), dtype=torch.float32) # (n_batch, MPC_T, n_state, T)
         results_inputs = torch.tensor(np.array([result[1] for result in results]), dtype=torch.float32) # (n_batch, MPC_T, n_ctrl, T)
+        results_V = torch.tensor(np.array([result[2] for result in results]), dtype=torch.float32) # (n_batch, MPC_T)
 
         results_states = results_states.to(device)
         results_inputs = results_inputs.to(device)
@@ -282,11 +282,14 @@ if __name__ == '__main__':
         x_list = results_states[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_state)
         u_list = results_inputs[:, :, :, 0].permute(1, 0, 2) # (MPC_T, n_batch, n_ctrl)
         VN_list = VN_cartpole_multi(results_states, results_inputs, Q.T @ Q, R, F.T @ F)
+        print(results_V)
+        print(VN_list)
         # VN_list = VN_cartpole_multi(results_states, results_inputs, Q, R, F)
         lossRDP, lossLyap = RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q.T @ Q, R, F.T @ F, 
                                                   MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path)
         lossRDP = lossRDP.mean()
         lossLyap = lossLyap.mean()
+        exit(0)
         # loss += RDP_criteria_cartpole(VN_list, x_list, u_list, 1, Q, R, F, MPC_T, lambda x: torch.relu(x), test=True, log_path=log_path).mean()
         # bound_penalty = bounded_weight_penalty(Q, F, weight_min, weight_max, lambda_weight)
         inverse_weight_penalty = inverse_square_weight_penalty(Q_diag, None)
